@@ -12,25 +12,45 @@ class UserCreationForm(forms.ModelForm):
     """A form for creating new users. Includes all the required
     fields, plus a repeated password."""
     
-    password1 = forms.CharField(label='Password', widget=forms.PasswordInput)
-    password2 = forms.CharField(label='Password confirmation', widget=forms.PasswordInput)
+    password1 = forms.CharField(
+        label='Password', 
+        widget=forms.PasswordInput,
+        required=False,
+        help_text="Leave blank to require user to set password during first login"
+    )
+    password2 = forms.CharField(
+        label='Password confirmation', 
+        widget=forms.PasswordInput,
+        required=False
+    )
 
     class Meta:
         model = User
-        fields = ('email', 'first_name', 'last_name', 'tel', 'role')
+        fields = ('email', 'first_name', 'last_name', 'tel', 'role', 'setup_required')
 
     def clean_password2(self):
         # Check that the two password entries match
         password1 = self.cleaned_data.get("password1")
         password2 = self.cleaned_data.get("password2")
-        if password1 and password2 and password1 != password2:
-            raise ValidationError("Passwords don't match")
+        
+        if password1 or password2:  # Only validate if either field has content
+            if password1 != password2:
+                raise ValidationError("Passwords don't match")
         return password2
 
     def save(self, commit=True):
         # Save the provided password in hashed format
         user = super().save(commit=False)
-        user.set_password(self.cleaned_data["password1"])
+        password = self.cleaned_data.get("password1")
+        
+        if password:
+            user.set_password(password)
+            user.setup_required = False
+        else:
+            user.setup_required = True
+            # Set unusable password for users who need to set it up
+            user.set_unusable_password()
+            
         if commit:
             user.save()
         return user
@@ -46,7 +66,7 @@ class UserChangeForm(forms.ModelForm):
     class Meta:
         model = User
         fields = ('email', 'password', 'first_name', 'last_name', 'tel', 'role', 
-                 'is_active', 'is_staff', 'is_superuser')
+                 'is_active', 'is_staff', 'is_superuser', 'setup_required')
 
 
 @admin.register(User)
@@ -58,9 +78,9 @@ class UserAdmin(BaseUserAdmin):
     add_form = UserCreationForm
 
     # The fields to be used in displaying the User model.
-    list_display = ('email', 'get_full_name', 'role', 'is_active', 'is_online_status', 
-                   'last_login', 'date_joined')
-    list_filter = ('is_staff', 'is_superuser', 'is_active', 'role', 'date_joined')
+    list_display = ('email', 'get_full_name', 'role', 'setup_status', 'is_active', 
+                   'is_online_status', 'has_keys_status', 'last_login', 'date_joined')
+    list_filter = ('is_staff', 'is_superuser', 'is_active', 'role', 'setup_required', 'date_joined')
     
     # Fields for the user detail page
     fieldsets = (
@@ -70,14 +90,18 @@ class UserAdmin(BaseUserAdmin):
             'fields': ('is_active', 'is_staff', 'is_superuser', 'role', 'groups', 'user_permissions'),
             'classes': ('collapse',)
         }),
+        ('Setup Status', {
+            'fields': ('setup_required', 'setup_completed_at'),
+            'classes': ('collapse',)
+        }),
         ('Important dates', {
             'fields': ('last_login', 'date_joined', 'last_ping'),
             'classes': ('collapse',)
         }),
         ('Security Keys', {
-            'fields': ('public_key', 'private_key'),
+            'fields': ('public_key', 'key_info'),
             'classes': ('collapse',),
-            'description': 'RSA key pair for secure operations. Private key should be kept confidential.'
+            'description': 'RSA key pair for secure operations. Private key is encrypted and stored securely.'
         }),
     )
     
@@ -86,7 +110,7 @@ class UserAdmin(BaseUserAdmin):
         (None, {
             'classes': ('wide',),
             'fields': ('email', 'first_name', 'last_name', 'tel', 'role', 
-                      'password1', 'password2', 'is_active', 'is_staff'),
+                      'password1', 'password2', 'setup_required', 'is_active', 'is_staff'),
         }),
     )
     
@@ -96,13 +120,26 @@ class UserAdmin(BaseUserAdmin):
     filter_horizontal = ('groups', 'user_permissions')
     
     # Read-only fields
-    readonly_fields = ('date_joined', 'last_login', 'last_ping', 'id')
+    readonly_fields = ('date_joined', 'last_login', 'last_ping', 'id', 'setup_completed_at', 'key_info')
     
     # Custom methods for list display
     def get_full_name(self, obj):
         """Display the full name of the user."""
         return obj.get_full_name()
     get_full_name.short_description = 'Full Name'
+    
+    def setup_status(self, obj):
+        """Display setup status with colored indicator."""
+        if obj.setup_required:
+            return format_html(
+                '<span style="color: orange;">●</span> Setup Required'
+            )
+        else:
+            return format_html(
+                '<span style="color: green;">●</span> Setup Complete'
+            )
+    setup_status.short_description = 'Setup Status'
+    setup_status.allow_tags = True
     
     def is_online_status(self, obj):
         """Display online status with colored indicator."""
@@ -117,8 +154,37 @@ class UserAdmin(BaseUserAdmin):
     is_online_status.short_description = 'Status'
     is_online_status.allow_tags = True
     
+    def has_keys_status(self, obj):
+        """Display key generation status."""
+        if obj.has_keys:
+            return format_html(
+                '<span style="color: green;">●</span> Keys Generated'
+            )
+        else:
+            return format_html(
+                '<span style="color: red;">●</span> No Keys'
+            )
+    has_keys_status.short_description = 'Keys'
+    has_keys_status.allow_tags = True
+    
+    def key_info(self, obj):
+        """Display key information."""
+        if obj.has_keys:
+            return format_html(
+                '<div><strong>Public Key:</strong> Present<br>'
+                '<strong>Private Key:</strong> Encrypted and stored<br>'
+                '<strong>Key Salt:</strong> Present</div>'
+            )
+        else:
+            return format_html(
+                '<div style="color: orange;"><strong>No keys generated yet</strong><br>'
+                'Keys will be generated when user completes setup</div>'
+            )
+    key_info.short_description = 'Key Information'
+    key_info.allow_tags = True
+    
     # Custom actions
-    actions = ['activate_users', 'deactivate_users', 'generate_keys_for_users', 'ping_users']
+    actions = ['activate_users', 'deactivate_users', 'require_setup', 'ping_users']
     
     def activate_users(self, request, queryset):
         """Activate selected users."""
@@ -132,14 +198,11 @@ class UserAdmin(BaseUserAdmin):
         self.message_user(request, f'{updated} users have been deactivated.')
     deactivate_users.short_description = "Deactivate selected users"
     
-    def generate_keys_for_users(self, request, queryset):
-        """Generate RSA key pairs for selected users."""
-        count = 0
-        for user in queryset:
-            user.generate_key_pair()
-            count += 1
-        self.message_user(request, f'Generated key pairs for {count} users.')
-    generate_keys_for_users.short_description = "Generate RSA keys for selected users"
+    def require_setup(self, request, queryset):
+        """Mark selected users as requiring setup."""
+        updated = queryset.update(setup_required=True, setup_completed_at=None)
+        self.message_user(request, f'{updated} users now require setup.')
+    require_setup.short_description = "Require setup for selected users"
     
     def ping_users(self, request, queryset):
         """Update last ping for selected users."""
@@ -147,16 +210,6 @@ class UserAdmin(BaseUserAdmin):
             user.update_last_ping()
         self.message_user(request, f'Updated ping timestamp for {queryset.count()} users.')
     ping_users.short_description = "Update ping timestamp for selected users"
-    
-    # Override save methods to handle key generation
-    def save_model(self, request, obj, form, change):
-        """Override save to automatically generate keys if needed."""
-        super().save_model(request, obj, form, change)
-        
-        # Generate keys if they don't exist
-        if not obj.private_key or not obj.public_key:
-            obj.generate_key_pair()
-            self.message_user(request, f'Generated RSA key pair for {obj.email}.')
 
 
 @admin.register(UserSession)
