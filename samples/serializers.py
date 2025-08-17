@@ -1,6 +1,7 @@
 # samples/serializers.py
 from rest_framework import serializers
 from .models import Client, Project
+from django.utils import timezone
 
 
 class ClientSerializer(serializers.ModelSerializer):
@@ -118,3 +119,119 @@ class ClientDetailSerializer(serializers.ModelSerializer):
     
     def get_projects_count(self, obj):
         return obj.projects.count()
+
+class ProjectListSerializer(serializers.ModelSerializer):
+    """Simplified serializer for project list views."""
+    
+    client_name = serializers.CharField(source='client.name', read_only=True)
+    client_id = serializers.UUIDField(source='client.id', read_only=True)
+    created_by_name = serializers.CharField(source='created_by.get_full_name', read_only=True)
+    samples_count = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = Project
+        fields = [
+            'id', 'name', 'description', 'status',
+            'client_id', 'client_name', 
+            'created_at', 'updated_at', 'completed_at',
+            'created_by', 'created_by_name', 'samples_count'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
+    
+    def get_samples_count(self, obj):
+        """Get the number of samples for this project."""
+        return obj.samples.count() if hasattr(obj, 'samples') else 0
+
+
+class ProjectCreateUpdateSerializer(serializers.ModelSerializer):
+    """Serializer for creating and updating projects."""
+    
+    class Meta:
+        model = Project
+        fields = [
+            'name', 'description', 'client', 'status', 'completed_at'
+        ]
+    
+    def validate_name(self, value):
+        """Validate that project name is not empty after stripping whitespace."""
+        if not value.strip():
+            raise serializers.ValidationError("Project name cannot be empty.")
+        return value.strip()
+    
+    def validate_client(self, value):
+        """Validate that the client is active."""
+        if not value.is_active:
+            raise serializers.ValidationError("Cannot create project for inactive client.")
+        return value
+    
+    def validate(self, data):
+        """Cross-field validation."""
+        # If status is COMPLETED, completed_at should be set
+        if data.get('status') == 'COMPLETED' and not data.get('completed_at'):
+            data['completed_at'] = timezone.now()
+        
+        # If status is not COMPLETED, completed_at should be None
+        if data.get('status') != 'COMPLETED':
+            data['completed_at'] = None
+        
+        return data
+
+
+class ProjectDetailSerializer(serializers.ModelSerializer):
+    """Detailed serializer for project detail view with related data."""
+    
+    client = ClientListSerializer(read_only=True)
+    created_by_name = serializers.CharField(source='created_by.get_full_name', read_only=True)
+    created_by_email = serializers.CharField(source='created_by.email', read_only=True)
+    samples_count = serializers.SerializerMethodField()
+    recent_samples = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = Project
+        fields = [
+            'id', 'name', 'description', 'status',
+            'client', 'created_at', 'updated_at', 'completed_at',
+            'created_by', 'created_by_name', 'created_by_email',
+            'samples_count', 'recent_samples'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at', 'created_by']
+    
+    def get_samples_count(self, obj):
+        """Get the number of samples for this project."""
+        return obj.samples.count() if hasattr(obj, 'samples') else 0
+    
+    def get_recent_samples(self, obj):
+        """Get the 5 most recent samples for this project."""
+        if hasattr(obj, 'samples'):
+            recent_samples = obj.samples.select_related('batch').order_by('-received_at')[:5]
+            return [{
+                'id': sample.id,
+                'sample_number': sample.sample_number,
+                'batch_number': sample.batch.batch_number,
+                'received_at': sample.received_at,
+                'status': sample.status
+            } for sample in recent_samples]
+        return []
+
+
+# Update the existing ProjectSerializer to be more comprehensive
+class ProjectSerializer(serializers.ModelSerializer):
+    """Enhanced basic serializer for Project model."""
+    
+    client_name = serializers.CharField(source='client.name', read_only=True)
+    created_by_name = serializers.CharField(source='created_by.get_full_name', read_only=True)
+    samples_count = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = Project
+        fields = [
+            'id', 'name', 'description', 'status', 
+            'client', 'client_name',
+            'created_at', 'updated_at', 'completed_at',
+            'created_by', 'created_by_name', 'samples_count'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at', 'created_by']
+    
+    def get_samples_count(self, obj):
+        """Get the number of samples for this project."""
+        return obj.samples.count() if hasattr(obj, 'samples') else 0
